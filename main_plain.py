@@ -1,5 +1,5 @@
 '''Single node, multi-GPUs training.'''
-import torch.distributed as dist
+
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
@@ -8,21 +8,11 @@ from models import *
 from utils import progress_bar
 
 
-def setup(local_rank, world_size):
-    # Init process group
-    print("Initialize Process Group...")
-    dist.init_process_group(backend='nccl', init_method='tcp://localhost:23456',
-                            rank=local_rank, world_size=world_size)
-    torch.cuda.set_device(local_rank)
-
-
 def init():
     # Init Model
     print("Initialize Model...")
     net = EfficientNetB0().cuda()
-    net = nn.SyncBatchNorm.convert_sync_batchnorm(net)
-    net = torch.nn.parallel.DistributedDataParallel(
-        net, device_ids=[dist.get_rank()], output_device=dist.get_rank())
+    net = nn.DataParallel(net)
 
     criterion = nn.CrossEntropyLoss().cuda()
     optimizer = torch.optim.SGD(net.parameters(), 1e-3, momentum=0.9, weight_decay=1e-4)
@@ -43,10 +33,8 @@ def init():
 
     trainset = torchvision.datasets.CIFAR10(
         root='./data', train=True, download=True, transform=transform_train)
-    trainsampler = torch.utils.data.distributed.DistributedSampler(trainset)
     trainloader = DataLoader(
-        trainset, batch_size=128 // dist.get_world_size(), shuffle=(trainsampler is None), num_workers=8,
-        pin_memory=True, sampler=trainsampler,
+        trainset, batch_size=128, shuffle=True, num_workers=8, pin_memory=True,
         persistent_workers=True
 
     )
@@ -55,7 +43,7 @@ def init():
         root='./data', train=False, download=True, transform=transform_test)
     testloader = DataLoader(
         testset, batch_size=100, shuffle=False, num_workers=2, pin_memory=False, persistent_workers=True)
-    return net, optimizer, trainloader, testloader, criterion, trainsampler
+    return net, optimizer, trainloader, testloader, criterion
 
 
 def train(epoch, net, trainloader, optimizer, ):
@@ -102,21 +90,11 @@ def _test(epoch, net, testloader, ):
 
 
 def worker():
-    net, optimizer, trainloader, testloader, criterion, trainsampler = init()
+    net, optimizer, trainloader, testloader, criterion = init()
     for epoch in range(200):
-        trainsampler.set_epoch(epoch)
         train(epoch, net, trainloader, optimizer)
         _test(epoch, net, testloader)
 
 
-def ddp_worker(randk, world_size):
-    setup(randk, world_size)
-    worker()
-
-
 if __name__ == '__main__':
-    import torch.multiprocessing as mp
-
-    n_gpu = torch.cuda.device_count()
-
-    mp.spawn(ddp_worker, nprocs=n_gpu, args=(n_gpu,))
+    worker()
