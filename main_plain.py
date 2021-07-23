@@ -1,14 +1,16 @@
 '''Single node, multi-GPUs training.'''
+import argparse
+from pprint import pprint
 
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 from models import *
-from utils import progress_bar
+from utils import progress_bar, IteratorTimer, item2str
 
 
-def init():
+def init(args):
     # Init Model
     print("Initialize Model...")
     net = EfficientNetB0().cuda()
@@ -34,7 +36,7 @@ def init():
     trainset = torchvision.datasets.CIFAR10(
         root='./data', train=True, download=True, transform=transform_train)
     trainloader = DataLoader(
-        trainset, batch_size=128, shuffle=True, num_workers=8, pin_memory=True,
+        trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True,
         persistent_workers=True
 
     )
@@ -52,21 +54,24 @@ def train(epoch, net, trainloader, optimizer, ):
     train_loss = 0
     correct = 0
     total = 0
+    timer = IteratorTimer()
     for batch_idx, (inputs, targets) in enumerate(trainloader):
-        inputs, targets = inputs.cuda(), targets.cuda()
-        outputs = net(inputs)
-        loss = F.cross_entropy(outputs, targets)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        with timer:
+            inputs, targets = inputs.cuda(), targets.cuda()
+            outputs = net(inputs)
+            loss = F.cross_entropy(outputs, targets)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        train_loss += loss.item()
-        _, predicted = outputs.max(1)
-        total += targets.size(0)
-        correct += predicted.eq(targets).sum().item()
+            train_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
 
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
                      % (train_loss / (batch_idx + 1), 100. * correct / total, correct, total))
+    print(f"Epoch {epoch}: {item2str(timer.summary())}")
 
 
 def _test(epoch, net, testloader, ):
@@ -89,12 +94,18 @@ def _test(epoch, net, testloader, ):
                          % (test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
 
 
-def worker():
-    net, optimizer, trainloader, testloader, criterion = init()
+def worker(args):
+    net, optimizer, trainloader, testloader, criterion = init(args)
     for epoch in range(200):
         train(epoch, net, trainloader, optimizer)
         _test(epoch, net, testloader)
 
 
 if __name__ == '__main__':
-    worker()
+    n_gpu = torch.cuda.device_count()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-b", "--batch-size", type=int, default=256)
+    parser.add_argument("--num-workers", type=int, default=12)
+    args = parser.parse_args()
+    pprint(vars(args))
+    worker(args)
